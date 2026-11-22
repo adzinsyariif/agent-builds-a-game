@@ -1,0 +1,4 @@
+# Captured gameplay frames and local program output are build artifacts.
+video/frames/
+out/
+__pycache__/

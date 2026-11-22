@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Neon Serpent — a one-prompt game</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #05060f radial-gradient(1200px 800px at 50% -10%, #141a3d 0%, #05060f 55%);
+    color: #eef1ff;
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+    touch-action: none;
+  }
+  header { text-align: center; padding: 34px 16px 6px; }
+  h1 {
+    font-size: 64px; letter-spacing: 10px; font-weight: 800;
+    background: linear-gradient(92deg, #37f2c8 5%, #39b6ff 48%, #e14dff 95%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 22px rgba(64, 190, 255, .45));
+  }
+  .sub { margin-top: 6px; font-size: 21px; letter-spacing: 4px; color: #8f9bd6; text-transform: uppercase; }
+  #hud {
+    display: flex; gap: 54px; justify-content: center; align-items: baseline;
+    padding: 16px 0 10px; font-variant-numeric: tabular-nums;
+  }
+  #hud .lab { font-size: 19px; letter-spacing: 3px; color: #8f9bd6; text-transform: uppercase; }
+  #hud .val { font-size: 52px; font-weight: 800; color: #fff; text-shadow: 0 0 18px rgba(55,242,200,.55); }
+  #hud .val.best { color: #ffd94a; text-shadow: 0 0 18px rgba(255,217,74,.5); }
+  #stage { position: relative; }
+  canvas {
+    display: block; border-radius: 26px;
+    box-shadow: 0 0 0 2px rgba(90,120,255,.35), 0 0 64px rgba(46,110,255,.28), 0 30px 80px rgba(0,0,0,.6);
+    background: #070818;
+  }
+  #banner {
+    position: absolute; inset: 0; display: none; place-items: center; text-align: center;
+    background: rgba(4, 5, 18, .72); border-radius: 26px; backdrop-filter: blur(3px);
+  }
+  #banner .big { font-size: 74px; font-weight: 800; letter-spacing: 6px; color: #fff;
+    text-shadow: 0 0 30px rgba(225,77,255,.8); }
+  #banner .small { margin-top: 12px; font-size: 26px; color: #aeb8ee; letter-spacing: 2px; }
+  footer { padding: 20px 12px 0; text-align: center; color: #6d77ab; font-size: 21px; letter-spacing: 2px; }
+  footer b { color: #aeb8ee; font-weight: 600; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>NEON SERPENT</h1>
+    <div class="sub">built from one prompt &middot; plays itself</div>
+  </header>
+  <div id="hud">
+    <div><span class="lab">Score&nbsp;</span><span class="val" id="score">0</span></div>
+    <div><span class="lab">Best&nbsp;</span><span class="val best" id="best">0</span></div>
+  </div>
+  <div id="stage">
+    <canvas id="game" width="1080" height="1080"></canvas>
+    <div id="banner"><div><div class="big" id="bannerTitle">GAME OVER</div><div class="small" id="bannerText"></div></div></div>
+  </div>
+  <footer><b>Arrow keys / WASD</b> to drive &middot; <b>Space</b> to pause &middot; swipe on touch</footer>
+
+<script>
+'use strict';
+/* Neon Serpent — a tiny snake game with a self-driving demo mode.
+   The autopilot picks, at every step, the safe move that closes on the food
+   while keeping the most open space reachable, so it survives long enough
+   to put on a show without any human at the keys. */
+const COLS = 24, ROWS = 24;
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const CELL = cv.width / COLS;
+
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const banner = document.getElementById('banner');
+const bannerTitle = document.getElementById('bannerTitle');
+const bannerText = document.getElementById('bannerText');
+
+const DIRS = [
+  { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+];
+
+let snake, dir, pendingDir, food, score, best = 0, alive, paused, tickMs, lastTick, particles, floaters, eaten;
+
+function randCell() {
+  return { x: Math.floor(Math.random() * COLS), y: Math.floor(Math.random() * ROWS) };
+}
+function same(a, b) { return a.x === b.x && a.y === b.y; }
+function onSnake(c) { return snake.some(s => same(s, c)); }
+
+function placeFood() {
+  do { food = randCell(); } while (onSnake(food));
+}
+
+function reset() {
+  const cy = Math.floor(ROWS / 2);
+  snake = [];
+  for (let i = 0; i < 4; i++) snake.push({ x: 8 - i, y: cy });
+  dir = DIRS[0]; pendingDir = dir;
+  score = 0; alive = true; paused = false; tickMs = 118; eaten = 0;
+  particles = []; floaters = [];
+  placeFood();
+  banner.style.display = 'none';
+  draw(0);
+}
+
+function burst(c, colour) {
+  for (let i = 0; i < 22; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1.2 + Math.random() * 3.4;
+    particles.push({ x: c.x * CELL + CELL / 2, y: c.y * CELL + CELL / 2,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, colour });
+  }
+}
+
+/* --- autopilot -------------------------------------------------------------
+   For each candidate direction: reject moves that die, then score the rest
+   by distance to the food minus a reward for open space (flood fill), so the
+   snake eats steadily yet rarely traps itself. */
+function floodSpace(start, body) {
+  const blocked = new Set(body.map(p => p.x + ',' + p.y));
+  const seen = new Set([start.x + ',' + start.y]);
+  const queue = [start];
+  let count = 0;
+  while (queue.length) {
+    const c = queue.pop();
+    count++;
+    for (const d of DIRS) {
+      const n = { x: c.x + d.x, y: c.y + d.y };
+      const k = n.x + ',' + n.y;
+      if (n.x < 0 || n.y < 0 || n.x >= COLS || n.y >= ROWS) continue;
+      if (blocked.has(k) || seen.has(k)) continue;
+      seen.add(k); queue.push(n);
+    }
+  }
+  return count;
+}
+
+function autopilot() {
+  const head = snake[0];
+  let bestMove = null, bestScore = -Infinity;
+  for (const d of DIRS) {
+    if (d.x === -dir.x && d.y === -dir.y) continue;
+    const next = { x: head.x + d.x, y: head.y + d.y };
+    if (next.x < 0 || next.y < 0 || next.x >= COLS || next.y >= ROWS) continue;
+    const willEat = same(next, food);
+    const bodyToCheck = willEat ? snake : snake.slice(0, -1);
+    if (bodyToCheck.some(s => same(s, next))) continue;
+    const dist = Math.abs(food.x - next.x) + Math.abs(food.y - next.y);
+    const space = floodSpace(next, bodyToCheck);
+    const s = -dist * 4 + Math.min(space, 60) * 0.35 + (willEat ? 50 : 0);
+    if (s > bestScore) { bestScore = s; bestMove = d; }
+  }
+  if (bestMove) pendingDir = bestMove;
+}
+
+const AUTO = new URLSearchParams(location.search).get('auto') !== '0';
+
+function step() {
+  if (AUTO) autopilot();
+  dir = pendingDir;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS || onSnake(head)) {
+    alive = false;
+    best = Math.max(best, score);
+    bestEl.textContent = best;
+    bannerTitle.textContent = 'GAME OVER';
+    bannerText.textContent = 'score ' + score + ' — restarting the show…';
+    banner.style.display = 'grid';
+    setTimeout(reset, 1600);
+    return;
+  }
+  snake.unshift(head);
+  if (same(head, food)) {
+    eaten++;
+    score += 10;
+    scoreEl.textContent = score;
+    burst(food, '#ffd94a');
+    floaters.push({ x: food.x * CELL + CELL / 2, y: food.y * CELL, text: '+10', life: 1 });
+    tickMs = Math.max(74, tickMs - 2.2);
+    placeFood();
+  } else {
+    snake.pop();
+  }
+}
+
+function draw(now) {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  // board: deep indigo with a soft checker and a faint grid
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      ctx.fillStyle = (x + y) % 2 ? '#0a0c26' : '#080a20';
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+  ctx.strokeStyle = 'rgba(90,110,255,0.07)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < COLS; i++) {
+    ctx.beginPath(); ctx.moveTo(i * CELL, 0); ctx.lineTo(i * CELL, cv.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * CELL); ctx.lineTo(cv.width, i * CELL); ctx.stroke();
+  }
+  // food: a pulsing golden orb
+  const pulse = 1 + Math.sin(now / 180) * 0.14;
+  const fx = food.x * CELL + CELL / 2, fy = food.y * CELL + CELL / 2;
+  ctx.save();
+  ctx.shadowColor = '#ffd94a'; ctx.shadowBlur = 30;
+  ctx.fillStyle = '#ffd94a';
+  ctx.beginPath(); ctx.arc(fx, fy, CELL * 0.30 * pulse, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff3c4';
+  ctx.beginPath(); ctx.arc(fx, fy, CELL * 0.15 * pulse, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // snake: rounded segments shading from cyan head to magenta tail
+  for (let i = snake.length - 1; i >= 0; i--) {
+    const t = snake.length <= 1 ? 0 : i / (snake.length - 1);
+    const hue = 168 + t * 118; // 168 (teal) -> 286 (magenta)
+    const seg = snake[i];
+    const pad = i === 0 ? 2.5 : 4.5;
+    ctx.save();
+    ctx.shadowColor = `hsl(${hue} 100% 62%)`;
+    ctx.shadowBlur = i === 0 ? 26 : 14;
+    ctx.fillStyle = `hsl(${hue} 96% ${i === 0 ? 66 : 56}%)`;
+    ctx.beginPath();
+    ctx.roundRect(seg.x * CELL + pad, seg.y * CELL + pad, CELL - pad * 2, CELL - pad * 2, 11);
+    ctx.fill();
+    ctx.restore();
+  }
+  // eyes on the head, looking along the direction of travel
+  const h = snake[0];
+  const ex = dir.x, ey = dir.y;
+  const px = -ey, py = ex;
+  ctx.fillStyle = '#06121a';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(h.x * CELL + CELL / 2 + ex * 7 + px * s * 9.5,
+            h.y * CELL + CELL / 2 + ey * 7 + py * s * 9.5, 4.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // particles and floating score text
+  particles = particles.filter(p => p.life > 0);
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy; p.vx *= 0.94; p.vy *= 0.94; p.life -= 0.03;
+    ctx.globalAlpha = Math.max(p.life, 0);
+    ctx.fillStyle = p.colour;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4.4 * p.life + 1, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  floaters = floaters.filter(f => f.life > 0);
+  for (const f of floaters) {
+    f.y -= 1.6; f.life -= 0.022;
+    ctx.globalAlpha = Math.max(f.life, 0);
+    ctx.font = '800 34px "Avenir Next", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffd94a';
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function frame(now) {
+  if (alive && !paused && now - lastTick >= tickMs) {
+    lastTick = now;
+    step();
+  }
+  draw(now);
+  requestAnimationFrame(frame);
+}
+
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  const map = { arrowup: DIRS[3], w: DIRS[3], arrowdown: DIRS[2], s: DIRS[2],
+                arrowleft: DIRS[1], a: DIRS[1], arrowright: DIRS[0], d: DIRS[0] };
+  if (k === ' ') { paused = !paused; e.preventDefault(); return; }
+  const nd = map[k];
+  if (nd && !(nd.x === -dir.x && nd.y === -dir.y)) { pendingDir = nd; e.preventDefault(); }
+});
+
+let touchStart = null;
+addEventListener('touchstart', e => { touchStart = e.touches[0]; }, { passive: true });
+addEventListener('touchend', e => {
+  if (!touchStart) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStart.clientX, dy = t.clientY - touchStart.clientY;
+  if (Math.hypot(dx, dy) < 24) return;
+  const nd = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? DIRS[0] : DIRS[1]) : (dy > 0 ? DIRS[2] : DIRS[3]);
+  if (!(nd.x === -dir.x && nd.y === -dir.y)) pendingDir = nd;
+  touchStart = null;
+}, { passive: true });
+
+reset();
+lastTick = performance.now();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
